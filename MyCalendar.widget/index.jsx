@@ -11,6 +11,7 @@ export const initialState = {
   data: null,
   loading: true,
   hoverKey: null,
+  hoverEnabled: true,
   widgetLeft: 18,
   widgetTop: 18,
   positionLoaded: false,
@@ -29,31 +30,68 @@ const defaultRightPosition = () => {
 };
 
 const applyData = (prev, parsed) => {
-  if (prev.positionLoaded) return { ...prev, data: parsed, loading: false };
+  const persistedHover =
+    parsed && Object.prototype.hasOwnProperty.call(parsed, "hoverEnabled")
+      ? Boolean(parsed.hoverEnabled)
+      : prev.hoverEnabled;
+
+  if (prev.positionLoaded) {
+    return {
+      ...prev,
+      data: parsed,
+      loading: false,
+      hoverEnabled: persistedHover,
+      hoverKey: persistedHover ? prev.hoverKey : null,
+    };
+  }
+
   const p = parsed && parsed.widgetPosition ? parsed.widgetPosition : {};
   const fallback = defaultRightPosition();
   return {
     ...prev,
     data: parsed,
     loading: false,
+    hoverEnabled: persistedHover,
+    hoverKey: persistedHover ? prev.hoverKey : null,
     widgetLeft: p.saved ? Math.max(0, Number(p.left) || fallback.left) : fallback.left,
     widgetTop: p.saved ? Math.max(0, Number(p.top) || fallback.top) : fallback.top,
     positionLoaded: true,
   };
-};
+}
 
 export const updateState = (event, previousState) => {
   const prev = previousState || initialState;
   if (event.type === "LOADING") return { ...prev, loading: true };
   if (event.type === "DATA_UPDATED") return applyData(prev, parseOutput(event.output));
-  if (event.type === "HOVER") return { ...prev, hoverKey: event.key };
+  if (event.type === "HOVER") {
+    if (!prev.hoverEnabled) return prev;
+    return { ...prev, hoverKey: event.key };
+  }
   if (event.type === "LEAVE") return { ...prev, hoverKey: null };
+  if (event.type === "SET_HOVER_ENABLED") {
+    return {
+      ...prev,
+      hoverEnabled: Boolean(event.enabled),
+      hoverKey: event.enabled ? prev.hoverKey : null,
+    };
+  }
   if (event.type === "POSITION") return { ...prev, widgetLeft: event.left, widgetTop: event.top, positionLoaded: true };
   if (event.type === "RESET") {
     const p = defaultRightPosition();
     return { ...prev, widgetLeft: p.left, widgetTop: p.top, positionLoaded: true };
   }
-  if (Object.prototype.hasOwnProperty.call(event, "output")) return applyData(prev, parseOutput(event.output));
+  if (Object.prototype.hasOwnProperty.call(event, "output")) {
+    const parsed = parseOutput(event.output);
+    if (
+      prev.data &&
+      prev.data.ok &&
+      parsed.ok &&
+      (prev.data.year !== parsed.year || prev.data.month !== parsed.month)
+    ) {
+      return { ...prev, loading: false };
+    }
+    return applyData(prev, parsed);
+  }
   return prev;
 };
 
@@ -73,6 +111,8 @@ export const className = [
   "button{pointer-events:auto;border:0;outline:0;appearance:none;cursor:pointer;font:inherit;color:inherit}",
   ".btn{min-height:27px;padding:0 9px;border-radius:8px;background:rgba(12,16,22,.22);border:1px solid rgba(255,255,255,.08);font-size:10px;font-weight:680}",
   ".btn:hover{background:rgba(30,38,50,.44)}.icon{min-width:28px;padding:0 7px;font-size:14px}",
+  ".hover-toggle.on{background:rgba(57,208,162,.14);border-color:rgba(86,224,177,.22);color:rgba(193,255,232,.96)}",
+  ".hover-toggle.off{color:rgba(255,255,255,.46)}",
   ".month{min-width:105px;text-align:center;font-size:15px;font-weight:800}",
   ".shell{margin:0 8px;border:1px solid rgba(255,255,255,.15);border-radius:17px;background:rgba(12,16,22,.20);overflow:visible;box-shadow:0 12px 34px rgba(0,0,0,.16)}",
   ".weekdays,.grid{display:grid;grid-template-columns:repeat(7,1fr)}",
@@ -98,12 +138,57 @@ export const className = [
   ".error{margin:0 8px;padding:14px;border-radius:14px;background:rgba(20,24,31,.82);font-size:10px}"
 ].join(";");
 
-const COLORS = ["#58a6ff","#39d0a2","#b38cff","#ffb24d","#ff7597","#62d3e8","#f57b5f","#91c95b"];
-const colorFor = name => {
-  let h = 0;
-  String(name || "").split("").forEach(ch => { h = ((h << 5) - h + ch.charCodeAt(0)) | 0; });
-  return COLORS[Math.abs(h) % COLORS.length];
+const DEFAULT_EVENT_COLOR = "#5EA7FF";
+const DEFAULT_HOLIDAY_COLOR = "#FF6464";
+const DEFAULT_HOLIDAY_KEYWORDS = ["공휴일", "휴일", "holiday"];
+
+const normalizedColorSettings = settings => {
+  const value = settings || {};
+  return {
+    defaultEventColor: value.defaultEventColor || DEFAULT_EVENT_COLOR,
+    holidayColor: value.holidayColor || DEFAULT_HOLIDAY_COLOR,
+    holidayCalendarKeywords:
+      Array.isArray(value.holidayCalendarKeywords) && value.holidayCalendarKeywords.length
+        ? value.holidayCalendarKeywords
+        : DEFAULT_HOLIDAY_KEYWORDS,
+    calendarColors:
+      value.calendarColors && typeof value.calendarColors === "object"
+        ? value.calendarColors
+        : {},
+    nativeCalendarColors:
+      value.nativeCalendarColors && typeof value.nativeCalendarColors === "object"
+        ? value.nativeCalendarColors
+        : {},
+    useNativeCalendarColors: value.useNativeCalendarColors !== false,
+  };
 };
+
+const isHolidayCalendar = (name, settings) => {
+  const cfg = normalizedColorSettings(settings);
+  const calendarName = String(name || "").toLowerCase();
+  return cfg.holidayCalendarKeywords.some(keyword =>
+    calendarName.includes(String(keyword || "").toLowerCase())
+  );
+};
+
+const colorFor = (name, settings) => {
+  const cfg = normalizedColorSettings(settings);
+  const calendarName = String(name || "");
+
+  if (cfg.calendarColors[calendarName]) return cfg.calendarColors[calendarName];
+
+  if (
+    cfg.useNativeCalendarColors &&
+    cfg.nativeCalendarColors[calendarName]
+  ) {
+    return cfg.nativeCalendarColors[calendarName];
+  }
+
+  return isHolidayCalendar(calendarName, cfg)
+    ? cfg.holidayColor
+    : cfg.defaultEventColor;
+};
+
 const pad = n => String(n).padStart(2, "0");
 const keyOf = (y,m,d) => y + "-" + pad(m) + "-" + pad(d);
 const timeOf = iso => {
@@ -117,6 +202,10 @@ const shift = (y,m,delta) => {
 const loadMonth = (dispatch,y,m) => {
   dispatch({ type:"LOADING" });
   run(PY + " fetch " + y + " " + m).then(output => dispatch({ type:"DATA_UPDATED", output }));
+};
+const setHoverEnabled = (dispatch, enabled) => {
+  dispatch({ type:"SET_HOVER_ENABLED", enabled });
+  run(PY + " save-hover " + (enabled ? "true" : "false")).catch(() => {});
 };
 const openCalendar = e => {
   e.preventDefault();
@@ -160,7 +249,14 @@ export const render = (props,dispatch) => {
 
   const year = data.year, month = data.month;
   const events = Array.isArray(data.events) ? data.events : [];
+  const calendars = Array.isArray(data.calendars)
+    ? data.calendars.filter(name => {
+        const normalized = String(name || "").toLowerCase().replace(/[^a-z0-9가-힣]+/g, "");
+        return normalized && normalized !== "section" && normalized !== "sectionseparator";
+      })
+    : [];
   const maxVisible = Number(data.maxEventsPerDay) || 3;
+  const colorSettings = normalizedColorSettings(data.colorSettings);
   const now = new Date();
   const first = new Date(year, month - 1, 1);
   const leading = (first.getDay() + 6) % 7;
@@ -198,6 +294,11 @@ export const render = (props,dispatch) => {
             <button className="btn icon" onClick={() => { const p=shift(year,month,1); loadMonth(dispatch,p.year,p.month); }}>›</button>
             <button className="btn" disabled={current} onClick={() => loadMonth(dispatch,now.getFullYear(),now.getMonth()+1)}>이번 달</button>
           </div>
+          <button
+            className={"btn hover-toggle " + (s.hoverEnabled ? "on" : "off")}
+            onClick={() => setHoverEnabled(dispatch, !s.hoverEnabled)}
+            title={s.hoverEnabled ? "날짜 상세 호버 끄기" : "날짜 상세 호버 켜기"}
+          >호버 {s.hoverEnabled ? "ON" : "OFF"}</button>
           <button className="btn" onClick={() => run(CONFIG)}>⚙︎</button>
           <button className="btn icon" onClick={() => loadMonth(dispatch,year,month)}>↻</button>
         </div>
@@ -215,14 +316,15 @@ export const render = (props,dispatch) => {
             const col = idx % 7, row = Math.floor(idx/7);
             const popupClass = row >= rows-2 ? (col>=4?"ul":"ur") : (col>=4?"dl":"dr");
             const today = cell.year===now.getFullYear() && cell.month===now.getMonth()+1 && cell.day===now.getDate();
-            const hovered = s.hoverKey===key && list.length>0;
+            const hovered = s.hoverEnabled && s.hoverKey===key && list.length>0;
+            const hasHoliday = list.some(ev => isHolidayCalendar(ev.calendar, colorSettings));
             return <div className={"day " + (cell.outside?"outside ":"") + (today?"today":"")} key={key}
-              onMouseEnter={() => list.length && dispatch({type:"HOVER",key})}
+              onMouseEnter={() => s.hoverEnabled && list.length && dispatch({type:"HOVER",key})}
               onMouseLeave={() => hovered && dispatch({type:"LEAVE"})}>
-              <div className="dayhead"><span className="date">{cell.day}</span>{list.length?<span className="count">{list.length}</span>:null}</div>
+              <div className="dayhead"><span className="date" style={hasHoliday && !today ? {color:colorSettings.holidayColor} : undefined}>{cell.day}</span>{list.length?<span className="count">{list.length}</span>:null}</div>
               {visible.map((ev,i) => <a href="#" className="event" data-no-drag="true" onClick={openCalendar} key={key+"-"+i}>
-                <span className="bar" style={{background:colorFor(ev.calendar)}}></span>
-                <span className="etitle">{ev.title}</span>
+                <span className="bar" style={{background:colorFor(ev.calendar,colorSettings)}}></span>
+                <span className="etitle" style={{color:colorFor(ev.calendar,colorSettings)}}>{ev.title}</span>
                 {!ev.allDay?<span className="etime">{timeOf(ev.start)}</span>:null}
               </a>)}
               {list.length>maxVisible?<div className="more">+{list.length-maxVisible}</div>:null}
@@ -230,7 +332,7 @@ export const render = (props,dispatch) => {
                 <div className="phead"><div className="ptitle">{cell.month}월 {cell.day}일</div><div className="pcount">{list.length}개 일정</div></div>
                 <div className="plist">
                   {list.map((ev,i) => <a href="#" className="pevent" onClick={openCalendar} key={"p-"+key+"-"+i}>
-                    <div className="prow"><span className="dot" style={{background:colorFor(ev.calendar)}}></span><span className="petitle">{ev.title}</span><span className="petime">{ev.allDay?"종일":timeOf(ev.start)}</span></div>
+                    <div className="prow"><span className="dot" style={{background:colorFor(ev.calendar,colorSettings)}}></span><span className="petitle" style={{color:colorFor(ev.calendar,colorSettings)}}>{ev.title}</span><span className="petime">{ev.allDay?"종일":timeOf(ev.start)}</span></div>
                     <div className="meta">{ev.calendar}{ev.location?" · "+ev.location:""}</div>
                   </a>)}
                 </div>
@@ -241,7 +343,7 @@ export const render = (props,dispatch) => {
       </div>
 
       <div className="legend">
-        {(data.calendars || []).map(name => <span className="li" key={name}><span className="ldot" style={{background:colorFor(name)}}></span>{name}</span>)}
+        {calendars.map(name => <span className="li" key={name}><span className="ldot" style={{background:colorFor(name,colorSettings)}}></span>{name}</span>)}
       </div>
     </div>
   );
