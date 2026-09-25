@@ -2,53 +2,68 @@
 
 A lightweight monthly calendar widget for macOS, built for [Übersicht](https://tracesof.net/uebersicht/).
 
-It reads events from the macOS Calendar app through `icalBuddy` and displays them directly on the desktop.
+It reads events from the local macOS Calendar database through `icalBuddy`. Optionally, it can mirror the colors already assigned to calendars in Calendar.app by using `ical-guy` as a local EventKit color provider.
 
 ## Features
 
-- Integrates with calendars available in macOS Calendar via `icalBuddy`
-- Previous / next month navigation
+- Monthly calendar with previous / next month navigation
 - One-click return to the current month
 - Highlights today's date
 - Displays events directly inside each day
-- Shows full daily event details on hover
-- Distinguishes calendars with different colors
-- Opens the Calendar app when an event is clicked
-- Draggable widget position
-- Remembers the last saved position
-- Defaults to the top-right corner of the screen
-- Double-click the header to reset the widget to the top-right corner
-- No background blur
+- Persistent **Hover ON / OFF** toggle for daily detail popups
+- Uses native macOS Calendar colors when available
+- Falls back to configurable event / holiday colors when native color lookup is unavailable
+- Optional exact per-calendar color overrides
+- Removes stray `SECTION`, `:`, and `：` separator artifacts from calendar headings
+- Opens Calendar.app when an event is clicked
+- Draggable position with persistence
+- Defaults to the top-right corner
+- Double-click the header to reset its position
 - Automatically refreshes every 15 minutes
+- No background blur
 
 ## Requirements
 
-Install Übersicht and `icalBuddy` with Homebrew:
+Install Übersicht and `icalBuddy`:
 
 ```bash
 brew install --cask ubersicht
 brew install ical-buddy
 ```
 
-Then run:
+To mirror colors from Calendar.app, optionally install `ical-guy`:
 
 ```bash
-icalBuddy calendars
+brew install itspriddle/brews/ical-guy
 ```
 
-If macOS asks for Calendar access, allow it.
+The widget still works without `ical-guy`; it uses fallback colors instead.
+
+## Privacy and permissions
+
+This public repository contains **no account credentials, API keys, calendar contents, user-specific calendar names, saved positions, or macOS permission grants**.
+
+Calendar access happens locally on the Mac at runtime. `icalBuddy` and the optional `ical-guy` helper may require macOS Calendar read permission when first run. The widget does not upload calendar data to a remote service.
+
+Runtime settings are stored outside the repository:
+
+```text
+~/Library/Application Support/MyCalendarWidget/
+```
+
+Those files are local to each Mac and are not committed here.
 
 ## Installation
 
-Copy the `MyCalendar.widget` folder into:
+Copy `MyCalendar.widget` to:
 
 ```text
 ~/Library/Application Support/Übersicht/widgets/
 ```
 
-Then open Übersicht and select **Refresh All Widgets**.
+Then select **Refresh All Widgets** in Übersicht.
 
-## Project Structure
+## Project structure
 
 ```text
 MyCalendar.widget/
@@ -57,8 +72,8 @@ MyCalendar.widget/
 └── VERSION
 ```
 
-- `index.jsx` — Übersicht UI, month navigation, hover details, and drag behavior
-- `calendar_data.py` — reads calendar events through `icalBuddy`, handles settings, and stores widget position
+- `index.jsx` — UI, navigation, colors, hover toggle, and drag behavior
+- `calendar_data.py` — local event/color reading plus local preference persistence
 - `VERSION` — current widget version
 
 ## Configuration
@@ -69,61 +84,52 @@ On first run, the widget creates:
 ~/Library/Application Support/MyCalendarWidget/config.json
 ```
 
-Example:
+Default options:
 
 ```json
 {
-  "hiddenCalendars": [
-    "Birthdays",
-    "Holidays"
-  ],
-  "maxEventsPerDay": 3
+  "hiddenCalendars": [],
+  "maxEventsPerDay": 3,
+  "defaultEventColor": "#5EA7FF",
+  "holidayColor": "#FF6464",
+  "holidayCalendarKeywords": ["공휴일", "휴일", "holiday"],
+  "calendarColors": {},
+  "useNativeCalendarColors": true,
+  "hoverEnabled": true
 }
 ```
 
-### `hiddenCalendars`
+### Color priority
 
-Add exact calendar names here to hide them from the widget.
+1. Exact manual override from `calendarColors`
+2. Native Calendar.app color, when `ical-guy` is available
+3. Fallback holiday / default event colors
 
-You can check the calendar names available to `icalBuddy` with:
+For normal use, leave `calendarColors` empty and keep `useNativeCalendarColors` set to `true`.
 
-```bash
-icalBuddy calendars
-```
+## First run
 
-### `maxEventsPerDay`
-
-Controls how many events are shown directly inside each day cell.
-
-Additional events remain available in the hover detail panel.
-
-## Position
-
-Drag the widget by its header to move it.
-
-The saved position is stored in:
-
-```text
-~/Library/Application Support/MyCalendarWidget/position.json
-```
-
-Double-click the header to reset the widget to the top-right corner.
-
-## Troubleshooting
-
-To verify that `icalBuddy` can access your calendars:
+Check local Calendar access:
 
 ```bash
 icalBuddy calendars
 ```
 
-To test the widget data source directly:
+If native Calendar colors are enabled:
+
+```bash
+ical-guy events --format json
+```
+
+These commands only initialize/check local Calendar access. No credentials or calendar data are stored in this repository.
+
+## Manual data test
 
 ```bash
 python3 "$HOME/Library/Application Support/Übersicht/widgets/MyCalendar.widget/calendar_data.py" fetch
 ```
 
-A successful response should contain:
+A successful response contains:
 
 ```json
 {
@@ -132,6 +138,6 @@ A successful response should contain:
 }
 ```
 
-## Notes
+## Version
 
-This repository contains the cleaned-up version of the widget intended for normal use, rather than every intermediate development version.
+Current public source: **v1.4 — native Calendar colors + hover toggle**.
