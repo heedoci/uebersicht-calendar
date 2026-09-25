@@ -11,7 +11,16 @@ import sys
 APP_DIR = Path.home() / "Library" / "Application Support" / "MyCalendarWidget"
 CONFIG_FILE = APP_DIR / "config.json"
 POSITION_FILE = APP_DIR / "position.json"
-DEFAULT_CONFIG = {"hiddenCalendars": [], "maxEventsPerDay": 3}
+DEFAULT_CONFIG = {
+    "hiddenCalendars": [],
+    "maxEventsPerDay": 3,
+    "defaultEventColor": "#5EA7FF",
+    "holidayColor": "#FF6464",
+    "holidayCalendarKeywords": ["공휴일", "휴일", "holiday"],
+    "calendarColors": {},
+    "useNativeCalendarColors": True,
+    "hoverEnabled": True,
+}
 PLACEMENT_VERSION = 2
 
 def ensure_dir():
@@ -63,6 +72,12 @@ def save_position(left, top):
     write_json(POSITION_FILE, value)
     return value
 
+def save_hover(enabled):
+    cfg = load_config()
+    cfg["hoverEnabled"] = bool(enabled)
+    write_json(CONFIG_FILE, cfg)
+    return {"hoverEnabled": bool(enabled)}
+
 def find_icalbuddy():
     for path in (
         shutil.which("icalBuddy"),
@@ -73,6 +88,79 @@ def find_icalbuddy():
         if path and os.path.isfile(path) and os.access(path, os.X_OK):
             return path
     return None
+
+def find_icalguy():
+    for path in (
+        shutil.which("ical-guy"),
+        "/opt/homebrew/bin/ical-guy",
+        "/usr/local/bin/ical-guy",
+        "/opt/local/bin/ical-guy",
+    ):
+        if path and os.path.isfile(path) and os.access(path, os.X_OK):
+            return path
+    return None
+
+def _collect_icalguy_events(value):
+    if isinstance(value, list):
+        out = []
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            if isinstance(item.get("events"), list):
+                out.extend(_collect_icalguy_events(item.get("events")))
+            elif "calendar" in item and "title" in item:
+                out.append(item)
+        return out
+
+    if isinstance(value, dict) and isinstance(value.get("events"), list):
+        return _collect_icalguy_events(value.get("events"))
+
+    return []
+
+def fetch_native_calendar_colors(year, month, hidden_calendars):
+    binary = find_icalguy()
+    if not binary:
+        return {}, None
+
+    start, end = month_bounds(year, month)
+    start_date = start.date().isoformat()
+    end_date = (end - dt.timedelta(days=1)).date().isoformat()
+
+    cmd = [
+        binary,
+        "events",
+        "--format", "json",
+        "--group-by", "none",
+        "--from", start_date,
+        "--to", end_date,
+    ]
+
+    hidden = [str(x).strip() for x in hidden_calendars if str(x).strip()]
+    if hidden:
+        cmd.extend(["--exclude-calendars", ",".join(hidden)])
+
+    try:
+        proc = subprocess.run(cmd, text=True, capture_output=True, timeout=20)
+        if proc.returncode != 0:
+            return {}, binary
+
+        parsed = json.loads(proc.stdout or "[]")
+        colors = {}
+
+        for event in _collect_icalguy_events(parsed):
+            calendar = event.get("calendar")
+            if not isinstance(calendar, dict):
+                continue
+
+            title = clean_calendar_heading(calendar.get("title", ""))
+            color = str(calendar.get("color", "") or "").strip()
+
+            if title and re.fullmatch(r"#[0-9A-Fa-f]{6,8}", color):
+                colors[title] = color
+
+        return colors, binary
+    except Exception:
+        return {}, binary
 
 def month_bounds(year, month):
     start = dt.datetime(year, month, 1)
@@ -113,6 +201,29 @@ def expand_days(start, end):
         cur += dt.timedelta(days=1)
     return days
 
+def clean_calendar_heading(value):
+    value = (value or "").strip()
+
+    marker = "__SECTION__"
+    if value.startswith(marker):
+        value = value[len(marker):]
+    if value.endswith(marker):
+        value = value[:-len(marker)]
+
+    value = re.sub(r"^[\s:：\-–—]+", "", value)
+    value = re.sub(r"[\s:：\-–—]+$", "", value)
+    value = value.strip()
+
+    normalized = re.sub(r"[^a-z0-9가-힣]+", "", value.lower())
+    if not normalized or normalized in (
+        "section",
+        "sectionseparator",
+        "mycalsectionseparator",
+    ):
+        return ""
+
+    return value
+
 def parse_output(output):
     events = []
     calendars = []
@@ -120,7 +231,7 @@ def parse_output(output):
 
     for raw in output.splitlines():
         line = raw.strip()
-        if not line or line == "__SECTION__":
+        if not line:
             continue
 
         if line.startswith("__EVENT__"):
@@ -142,13 +253,15 @@ def parse_output(output):
                 "days": expand_days(start, end),
             })
         else:
-            current_calendar = line
-            if line not in calendars:
-                calendars.append(line)
+            heading = clean_calendar_heading(line)
+            if not heading:
+                continue
+            current_calendar = heading
+            if heading not in calendars:
+                calendars.append(heading)
 
     events.sort(key=lambda e: (e["start"], not e["allDay"], e["calendar"], e["title"]))
     return events, calendars
-
 def fetch_month(year, month):
     binary = find_icalbuddy()
     if not binary:
@@ -172,7 +285,7 @@ def fetch_month(year, month):
         "-ps", "|\t|\t|",
         "-b", "__EVENT__ ",
         "-ab", "__EVENT__ ",
-        "-ss", "__SECTION__",
+        "-ss", "",
     ]
 
     hidden = [str(x).strip() for x in cfg.get("hiddenCalendars", []) if str(x).strip()]
@@ -186,6 +299,16 @@ def fetch_month(year, month):
         raise RuntimeError((proc.stderr or proc.stdout or "icalBuddy failed").strip())
 
     events, calendars = parse_output(proc.stdout)
+
+    native_colors = {}
+    native_color_binary = None
+    if bool(cfg.get("useNativeCalendarColors", True)):
+        native_colors, native_color_binary = fetch_native_calendar_colors(
+            year,
+            month,
+            hidden,
+        )
+
     return {
         "ok": True,
         "backend": "icalBuddy",
@@ -195,6 +318,30 @@ def fetch_month(year, month):
         "calendars": calendars,
         "count": len(events),
         "maxEventsPerDay": max(1, min(6, int(cfg.get("maxEventsPerDay", 3)))),
+        "colorSettings": {
+            "defaultEventColor": str(cfg.get("defaultEventColor", "#5EA7FF")),
+            "holidayColor": str(cfg.get("holidayColor", "#FF6464")),
+            "holidayCalendarKeywords": [
+                str(x) for x in cfg.get(
+                    "holidayCalendarKeywords",
+                    ["공휴일", "휴일", "holiday"]
+                )
+                if str(x).strip()
+            ],
+            "calendarColors": (
+                cfg.get("calendarColors", {})
+                if isinstance(cfg.get("calendarColors", {}), dict)
+                else {}
+            ),
+            "nativeCalendarColors": native_colors,
+            "useNativeCalendarColors": bool(
+                cfg.get("useNativeCalendarColors", True)
+            ),
+        },
+        "nativeColorProvider": (
+            "ical-guy" if native_color_binary and native_colors else None
+        ),
+        "hoverEnabled": bool(cfg.get("hoverEnabled", True)),
         "fetchedAt": dt.datetime.now().astimezone().isoformat(timespec="minutes"),
         "widgetPosition": load_position(),
         "configPath": str(CONFIG_FILE),
@@ -206,6 +353,12 @@ def main():
 
     if command == "save-position" and len(sys.argv) >= 4:
         print(json.dumps(save_position(sys.argv[2], sys.argv[3]), ensure_ascii=False))
+        return
+
+    if command == "save-hover" and len(sys.argv) >= 3:
+        raw = str(sys.argv[2]).strip().lower()
+        enabled = raw in ("1", "true", "yes", "on")
+        print(json.dumps(save_hover(enabled), ensure_ascii=False))
         return
 
     now = dt.datetime.now()
@@ -226,6 +379,7 @@ def main():
             "calendars": [],
             "count": 0,
             "error": f"{type(exc).__name__}: {exc}",
+            "hoverEnabled": bool(load_config().get("hoverEnabled", True)),
             "widgetPosition": load_position(),
             "configPath": str(CONFIG_FILE),
         }, ensure_ascii=False))
