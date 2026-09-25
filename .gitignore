@@ -1,0 +1,8 @@
+.DS_Store
+__pycache__/
+*.pyc
+
+# Never commit local runtime state or exported calendar data.
+MyCalendar.widget/config.json
+MyCalendar.widget/position.json
+*.ics
